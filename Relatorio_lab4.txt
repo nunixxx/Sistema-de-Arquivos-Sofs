@@ -1,0 +1,178 @@
+==================================================
+RELATÓRIO T4 - SISTEMA DE ARQUIVOS SOFS
+==================================================
+Grupo: 
+- Heitor Sias Leite (Matrícula: 00577397)
+- Caio Felipe Ferreira Nunes (Matrícula: 00588024)
+
+--- 1. STATUS DE IMPLEMENTAÇÃO ---
+
+* sofs_create / sofs_delete: 
+
+O sofs_create verifica se o arquivo já existe, em caso positivo, ele reaproveita o i-node e zera seus blocos de dados. Já o sofs_delete primeiro verifica
+o RefCounter, com o objetivo de respeitar hard-links, e assim que o contador chega a zero, os blocos e o i-node são liberados.
+
+* sofs_open / sofs_close: 
+
+O sofs_open busca o espaço vazio na tabela global de arquivos e endereça o arquivo para esse local (respeitando juntamente o limite de 10 arquivos abertos
+simultaneamente). Além disso, a função verifica o uso de softlinks, limitando a busca a uma profundidade de 8 iterações, assim não há a chance de loops 
+infinitos (no caso de arquivos mutuamente se apontarem).A sofs_close verifica o handle do arquivo a ser fechado e libera o espaço na tabela global, 
+substituindo o valor por -1.
+
+* sofs_read / sofs_write: 
+
+O soft_read é capaz de lidar com a leitura de arquivos em fronteira de bloco de disco,manipulando o offset, fazendo a transferência de dados por meio de
+camadas de blocos. O sofs_write utiliza de demandas do sistema para alocar dinamicamente espaço para a escrita de dados, o que também trata da quebra
+de blocos.
+
+* sofs_opendir / sofs_readdir/ sofs_closedir: 
+
+O sofs_opendir é utilizado para abrir o diretório operando sobre o bloco de dados de i-node 0. A função de sofs_readir itera sobre as entradas do diretório
+e filtra as entradas inválida e ignora entradas deletadas (TYPEVAL_INVALIDO), retornando as entradas válidas. A operação de sofs_closedir encerra a operação,
+zerando as variáveis de controle.
+
+* sofs_sln (softlink): 
+
+O sofs_sln aloca um i-node do tipo TYPEVAL_LINK, juntamente com um bloco de dados correspondente. Em seguida, grava a string com o caminho do arquivo alvo
+dentro desse bloco de dados.
+
+* sofs_hln (hardlink): 
+
+O sofs_hln utiliza resolve_name() para seguir softlinks recursivamente até o arquivo regular alvo, criando uma entrada no diretório raiz que aponta para 
+o mesmo i-node e incrementando seu RefCounter.
+
+--- 2. DECISÕES DE PROJETO ---
+
+Tratamento de Links: Implementamos uma função chamada resolve_name() que é chamada ao abrir arquivos ou criar hard-links, com o intuito de resolver o caminho
+final do arquivo. Além disso, no caso de links que apontam para links, determinamos uma variável MAX_LINK_DEPTH de valor 8, com o objetivo de evitar loops 
+infinitos nesse cenário.
+
+
+O diretório raiz: O espaço do diretório raiz é gerenciado dinamicamente. Se a função find_free_record() não encontrar slots com TYPEVAL_INVALIDO no bloco atual,
+ela aloca novos blocos de dados para expandir a capacidade de armazenamento do diretório raiz.
+
+Resolução de blocos: Utilizamos da função get_data_block() para lidar com a lógica de tradução de endereços lógicos para físicos, com o fim de facilitar
+operações de escrita e leitura. Ela se utiliza de ponteiros diretos, indireção simples e indireção dupla para navegar os i-nodes. Ao receber flags de alocação
+(durante escrita), a função se encarrega de inicilizar os índices correpondentes em disco.
+
+--- 3. CASOS DE TESTE ---
+Para complementar os exemplos funcionais, foi criado o arquivo test_borda.c, responsável por executar cenários de casos de borda sobre as funcionalidades implementadas. Foram realizados 76 testes para verificar o comportamento do sistema em condições limite e situações excepcionais. O resultado detalhado de cada execução é apresentado abaixo:
+SOFS - Testes de Casos de Borda
+================================
+
+===== sofs_create =====
+  [OK] create com filename NULL
+  [OK] create nome com 50 chars
+  [OK] create nome > 50 chars (truncado)
+  [OK] create arquivo novo (teste.txt)
+  [OK] create arquivo existente (truncar)
+  [OK] truncado (leitura 0 bytes)
+
+===== sofs_delete =====
+  [OK] delete com name NULL
+  [OK] delete arquivo inexistente
+  [OK] delete arquivo existente
+  [OK] delete duplicado
+  [OK] hardlink criado
+  [OK] delete com refcount > 1 (remove entrada, mas preserva inode)
+  [OK] hardlink ainda acessivel apos delete do original
+  [OK] dados do hardlink intactos
+  [OK] softlink criado
+  [OK] delete softlink
+
+===== sofs_open =====
+  [OK] open com name NULL
+  [OK] open arquivo inexistente
+  [OK] softlink para existente
+  [OK] open via softlink valido
+  [OK] open via softlink quebrado
+
+===== sofs_close =====
+  [OK] close handle negativo
+  [OK] close handle >= MAX_OPEN_FILES
+  [OK] close handle nao aberto
+  [OK] close handle valido
+  [OK] close do mesmo handle de novo (duplo)
+
+===== sofs_read =====
+  [OK] read handle valido
+  [OK] read com buffer NULL
+  [OK] read com size = 0
+  [OK] read com size negativo
+  [OK] read normal (5 bytes)
+  [OK] read alem do EOF (retorna resto)
+  [OK] read apos EOF (retorna 0)
+  [OK] read de arquivo vazio
+  [OK] read arquivo vazio retorna 0
+
+===== sofs_write =====
+  [OK] write handle valido
+  [OK] write com buffer NULL
+  [OK] write com size = 0
+  [OK] write com size negativo
+  [OK] write normal (11 bytes)
+  [OK] write 600 bytes (cruza blocos)
+  [OK] leitura apos escrita multi-bloco
+  [OK] primeiros 11 bytes intactos
+  [OK] bytes X intactos apos primeiro bloco
+
+===== sofs_opendir/readdir/closedir =====
+  [OK] opendir normal
+  [OK] readdir em diretorio vazio retorna -1
+  [OK] closedir normal
+  [OK] closedir duplicado
+  [OK] readdir sem opendir
+  [OK] readdir com dentry NULL
+  [OK] readdir conta 3 entradas validas
+  [OK] readdir segunda varredura conta 3
+
+===== sofs_sln =====
+  [OK] sln com linkname NULL
+  [OK] sln com filename NULL
+  [OK] sln com ambos NULL
+  [OK] sln para arquivo inexistente
+  [OK] sln para arquivo existente
+
+===== sofs_hln =====
+  [OK] hln com linkname NULL
+  [OK] hln com filename NULL
+  [OK] hln com ambos NULL
+  [OK] hln para arquivo inexistente
+  [OK] hln para arquivo regular
+  [OK] hln para softlink (segue link, cria hardlink para alvo)
+
+===== MAX_OPEN_FILES =====
+  [OK] maximo de arquivos abertos = 10
+
+===== Esgotamento de recursos =====
+  [OK] esgotou inodes em algum momento
+  Inodes criados antes do esgotamento: 0
+
+===== Acesso apos remocao via handle pendente =====
+  [OK] leitura parcial antes delete
+  [OK] leitura apos delete via handle ainda aberto
+  [OK] escrita apos delete via handle aberto
+  [OK] reabrir apos delete+close falha
+
+===== Softlink quebrado =====
+  [OK] open via softlink quebrado retorna erro
+  [OK] softlink encadeado quebrado
+
+===== MAX_LINK_DEPTH (softlink recursivo) =====
+  [OK] cadeia de 8 softlinks funciona
+  [OK] cadeia de 9 softlinks excede MAX_LINK_DEPTH
+
+===== Limite indirecao dupla =====
+  [OK] escrita de 5 blocos (diretos + simples)
+  [OK] leitura de 5 blocos
+  [OK] conteudo dos 5 blocos intacto
+
+================================
+RELATORIO FINAL DOS TESTES
+================================
+Total: 76 | Passaram: 76 | Falharam: 0
+================================
+
+
+
+
